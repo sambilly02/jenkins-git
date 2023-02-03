@@ -1,0 +1,181 @@
+-
+  name: Sampaul VAPT Ansible 
+  hosts: ansible-target01
+  become: yes
+  tasks:
+  -
+    name: Ping my hosts
+    ansible.builtin.ping:
+  -
+    name: create access rules
+    ansible.builtin.blockinfile:
+      create: true
+      dest: "/etc/audit/rules.d/50-access.rules"
+      content: |
+        -a always,exit -F arch=b65 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+        -a always,exit -F arch=b32 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access
+        -a always,exit -F arch=b64 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+        -a always,exit -F arch=b32 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k access
+  -
+    name: create mounts rules
+    ansible.builtin.blockinfile:
+      create: true
+      dest: "/etc/audit/rules.d/50-mounts.rules"
+      content: |
+        -a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=4294967295 -k mounts
+        -a always,exit -F arch=b32 -S mount -F auid>=1000 -F auid!=4294967295 -k mounts
+  -
+    name: create delete rules
+    ansible.builtin.blockinfile:
+      create: true
+      dest: "/etc/audit/rules.d/50-delete.rules"
+      content: |
+        -a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=4294967295 -k delete
+        -a always,exit -F arch=b32 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=4294967295 -k delete
+  -
+    name: create login rules
+    ansible.builtin.blockinfile:
+      create: true
+      dest: "/etc/audit/rules.d/50-logins.rules"
+      content: |
+        -w /var/log/faillog -p wa -k logins
+        -w /var/log/lastlog -p wa -k logins
+        -w /var/log/tallylog -p wa -k logins
+  -
+    name: create scope rules
+    ansible.builtin.blockinfile:
+      create: true
+      dest: "/etc/audit/rules.d/50-scope.rules"
+      content: |
+        -w /etc/sudoers -p wa -k scope
+        -w /etc/sudoers.d/ -p wa -k scope  
+  -
+    name: Edit sshd config multiple lines
+    ansible.builtin.lineinfile:
+      path: /etc/ssh/sshd_config
+      #Line to search from
+      regex: '{{item.From}}'
+      #Line to change to
+      line: '{{item.To}}'
+      state: present
+      #validate the iteam
+      #validate: "httpd -t -f %s"
+    with_items:
+        - { From: 'PermitRootLogin yes', To: 'PermitRootLogin yes'}
+        - { From: '#PermitEmptyPasswords no', To: 'PermitEmptyPasswords no'}
+        - { From: '#PermitUserEnvironment no', To: 'PermitUserEnvironment no'}
+        - { From: '#ClientAliveCountMax 3', To: 'ClientAliveCountMax 3'}
+        - { From: '#ClientAliveInterval 0', To: 'ClientAliveInterval 300'}
+        - { From: '#AllowTcpForwarding yes', To: 'AllowTcpForwarding no'}
+        - { From: '#MaxStartups 10:30:100', To: 'MaxStartups 10:30:60'}
+        - { From: '#LogLevel INFO', To: 'LogLevel INFO'}   
+        - { From: 'X11Forwarding yes', To: 'X11Forwarding no'}
+        - { From: '#MaxAuthTries 6', To: 'MaxAuthTries 4'}
+        - { From: '#IgnoreRhosts yes', To: 'IgnoreRhosts yes'}
+        - { From: '#HostbasedAuthentication no', To: 'HostbasedAuthentication no'}
+  -
+    name: Edit login.defs
+    ansible.builtin.lineinfile:
+      path: /etc/login.defs
+      regex: '{{item.From}}'
+      line: '{{item.To}}'
+      state: present
+    with_items:
+        - { From: 'PASS_MIN_DAYS 0', To: 'PASS_MIN_DAYS 1'}
+        - { From: 'PASS_MAX_DAYS 99999', To: 'PASS_MAX_DAYS 365'}
+        - { From: 'UMASK 022', To: 'UMASK 027'}
+  -
+    name: Add timeout.sh
+    ansible.builtin.blockinfile:
+      create: true
+      path:  "/etc/profile.d/timeout.sh"
+      line: |
+        TMOUT=900
+        readonly TMOUT
+        export TMOUT    
+  - 
+    name: Add grub cmdline
+    ansible.builtin.lineinfile:
+      state: present
+      dest: "/etc/default/grub"
+      line: |
+        GRUB_CMDLINE_LINUX="audit=1"
+        GRUB_CMDLINE_LINUX="audit_backlog_limit=8192"
+  - 
+    name: Update grub
+    ansible.builtin.command:
+      update-grub
+  -
+    name: Set Postfix Configuration
+    ansible.builtin.debconf:
+      name: postfix
+      question: "postfix/main_mailer_type"
+      value: "'No configuration'"
+      vtype: "string"
+  -
+    name: install AIDE
+    ansible.builtin.package:
+      name:
+        - aide
+        - aide-common
+      state: latest
+  -
+    name: Aide init
+    ansible.builtin.shell:
+      cmd: aideinit
+      cmd: mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+  -
+    name: Aide file entry
+    ansible.builtin.lineinfile:
+      create: true
+      dest: "/etc/systemd/system/aidecheck.service"
+      line: |
+        [Unit]
+        Description=Aide Check
+
+        [Service]
+        Type=simple
+        ExecStart=/usr/bin/aide.wrapper --config
+        ExecStart=/etc/aide/aide.conf --check
+
+        [Install]
+        WantedBy=multi-user.target
+  -
+    name: Aide file entry
+    ansible.builtin.lineinfile:
+      create: true
+      dest: "/etc/systemd/system/aidecheck.timer"
+      line: |
+        [Unit]
+        Description=Aide check every day at 5AM
+
+        [Timer]
+        OnCalendar=*-*-* 05:00:00
+        Unit=aidecheck.service
+
+        [Install]
+        WantedBy=multi-user.target    
+  -
+    name: Run the commands to change owner
+    ansible.builtin.shell:
+      cmd: chown root:root /etc/systemd/system/aidecheck.*
+      cmd: chmod 0644 /etc/systemd/system/aidecheck.*
+      cmd: systemctl daemon-reload
+      cmd: systemctl enable aidecheck.service
+      cmd: systemctl --now enable aidecheck.timer"
+  -
+    name: Authorized users only
+    ansible.builtin.command:
+      echo "Authorized uses only. All activity may be monitored and reported."> /etc/issue.net
+  - 
+    name: Install auditd
+    ansible.builtin.package:
+      name:
+        - auditd
+        - audispd-plugins
+      state: latest
+  -
+    name: Enable auditd
+    ansible.builtin.command:
+      systemctl --now enable auditd
+
